@@ -1,6 +1,6 @@
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
-from utils import TextGenerator, evaluate_model_on_gsm8k
+from helpers.utils import TextGenerator, evaluate_model_on_gsm8k
 import torch
 
 MODEL_NAME = "distilgpt2"
