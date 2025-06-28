@@ -4,7 +4,7 @@ from helpers.utils import TextGenerator, evaluate_model_on_gsm8k
 import torch
 
 MODEL_NAME = "distilgpt2"
-OUTPUT_DIR = "./output"
+OUTPUT_DIR = "./output_sft_gsm8k"
 
 text_gen = TextGenerator(MODEL_NAME)
 tokenizer = text_gen.tokenizer

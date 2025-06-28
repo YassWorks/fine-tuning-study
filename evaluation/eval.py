@@ -1,5 +1,4 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from helpers.utils import generate_text, get_answer_from_model_on_gsm8k, evaluate_model_on_gsm8k, TextGenerator
+from helpers.utils import evaluate_model_on_gsm8k, TextGenerator
 from datasets import load_dataset
 
 model = TextGenerator("distilgpt2")
