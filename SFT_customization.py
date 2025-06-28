@@ -1,6 +1,6 @@
 from datasets import load_dataset
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
-from utils import TextGenerator
+from utils import TextGenerator, evaluate_model_on_gsm8k
 import torch
 
 MODEL_NAME = "distilgpt2"
@@ -12,8 +12,13 @@ model = text_gen.model
 
 # Load GSM8K dataset
 dataset = load_dataset("gsm8k", "main")
-train_dataset = dataset["train"].select(range(1000))
-test_dataset = dataset["test"].select(range(300))
+train_dataset = dataset["train"].select(range(100))
+test_dataset = dataset["test"].select(range(30))
+
+# Testinf before fine-tuning
+print("Testing model before fine-tuning "+'#'*50)
+score_pre = evaluate_model_on_gsm8k(text_gen, test_dataset, limit=10)
+print(f"Accuracy before fine-tuning: {score_pre:.2f}")
 
 # Preprocess function for SFT
 def preprocess(example):
@@ -45,7 +50,7 @@ training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=4,
     per_device_eval_batch_size=4,
-    evaluation_strategy="steps",
+    eval_strategy="steps",
     eval_steps=500,
     logging_steps=100,
     save_strategy="epoch",
@@ -65,7 +70,6 @@ trainer = Trainer(
     args=training_args,
     train_dataset=tokenized_train,
     eval_dataset=tokenized_test,
-    tokenizer=tokenizer,
     data_collator=data_collator
 )
 
@@ -73,3 +77,9 @@ trainer.train()
 
 trainer.save_model(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
+
+# Testinf after fine-tuning
+print("Testing model after fine-tuning "+'#'*50)
+new_text_gen = TextGenerator(OUTPUT_DIR)
+score_post = evaluate_model_on_gsm8k(new_text_gen, test_dataset, limit=10)
+print(f"Accuracy after fine-tuning: {score_post:.2f}")
