@@ -15,7 +15,7 @@ math_data = load_dataset("HuggingFaceH4/MATH-500")
 train_dataset = math_data["test"].select(range(100))
 
 # Preprocessing
-def preprocess_daft(example):
+def preprocess(example):
     full_text = " ".join([str(value) for value in example.values()])
     encoded = tokenizer(
         full_text,
@@ -27,7 +27,7 @@ def preprocess_daft(example):
     encoded["labels"] = encoded["input_ids"].clone()
     return {k: v.squeeze() for k, v in encoded.items()}
 
-tokenized_train = train_dataset.map(preprocess_daft, remove_columns=train_dataset.column_names)
+tokenized_train = train_dataset.map(preprocess, remove_columns=train_dataset.column_names)
 
 # Trainer setup
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)

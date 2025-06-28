@@ -7,6 +7,7 @@ class TextGenerator:
         self.model = AutoModelForCausalLM.from_pretrained(model_name)
         
         self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.model.resize_token_embeddings(len(self.tokenizer))
 
 
 def generate_text(text_gen:TextGenerator, prompt, max_length=50):
