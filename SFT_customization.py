@@ -6,7 +6,6 @@ import torch
 MODEL_NAME = "distilgpt2"
 OUTPUT_DIR = "./output"
 
-# Load model and tokenizer using your class
 text_gen = TextGenerator(MODEL_NAME)
 tokenizer = text_gen.tokenizer
 model = text_gen.model
@@ -42,7 +41,6 @@ tokenized_test = test_dataset.map(preprocess, remove_columns=test_dataset.column
 # Data collator (no MLM for causal models)
 data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-# Training arguments
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     per_device_train_batch_size=4,
@@ -62,7 +60,6 @@ training_args = TrainingArguments(
     push_to_hub=False
 )
 
-# Trainer setup
 trainer = Trainer(
     model=model,
     args=training_args,
@@ -72,9 +69,7 @@ trainer = Trainer(
     data_collator=data_collator
 )
 
-# Run fine-tuning
 trainer.train()
 
-# Save model and tokenizer
 trainer.save_model(OUTPUT_DIR)
 tokenizer.save_pretrained(OUTPUT_DIR)
