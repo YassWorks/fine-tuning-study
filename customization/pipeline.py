@@ -20,6 +20,10 @@ model = text_gen.model
 
 
 class DAFTTrainer:
+    """
+    Fine-tunes a given model using the Domain-Adaptive Fine-Tuning (DAFT) approach on a given dataset.
+    Outputs a new fine-tuned model saved to a specified output directory.
+    """
 
     def __init__(
         self,
@@ -60,6 +64,7 @@ class DAFTTrainer:
                 self.dataset = load_dataset(dataset, split=dataset_split_name)
         else:
             raise ValueError("Either dataset_name or dataset must be provided")
+
 
     def fine_tune(self):
         """
@@ -107,6 +112,9 @@ class DAFTTrainer:
 
     @staticmethod
     def preprocesser(example):
+        """
+        Preprocess function for the dataset.
+        """
         full_text = " ".join([str(value) for value in example.values()])
         encoded = tokenizer(
             full_text,
