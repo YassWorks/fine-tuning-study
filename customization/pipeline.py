@@ -27,8 +27,6 @@ class DAFTTrainer:
     Fine-tunes a given model using the Domain-Adaptive Fine-Tuning (DAFT) approach on a given dataset.
     Outputs a new fine-tuned model that can be saved to a specified output directory.
     """
-
-
     def __init__(
         self,
         text_gen: TextGenerator = None,
@@ -101,6 +99,10 @@ class DAFTTrainer:
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
         if limit:
+            if limit <= 0 or limit > len(self.dataset):
+                err_msg = f"Limit must be a positive integer less than or equal to the size of the dataset. Current size: {len(self.dataset)}"
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
             logger.info(f"Limiting dataset to {limit} samples.")
             self.dataset = self.dataset.select(range(limit))
         
@@ -194,7 +196,7 @@ class DAFTTrainer:
 
 class SFTTrainer:
     """
-    Fine-tunes a given model using the Domain-Adaptive Fine-Tuning (SFT) approach on a given dataset.
+    Fine-tunes a given model using the Supervised Fine-Tuning (SFT) approach on a given dataset.
     Outputs a new fine-tuned model that can be saved to a specified output directory.
     """
     def __init__(
@@ -209,7 +211,7 @@ class SFTTrainer:
         test_dataset_split_name: str = "test",
     ):
         """
-        Initializes the DAFTTrainer with either a TextGenerator instance or a model name, 
+        Initializes the SFTTrainer with either a TextGenerator instance or a model name, 
         and either a DataSet instance or a dataset name.
         Args:
             text_gen (TextGenerator, optional): An instance of TextGenerator. Defaults to None.
@@ -221,112 +223,159 @@ class SFTTrainer:
             test_dataset_name (str, optional): The name of the testing dataset to use. Defaults to None.
             test_dataset_split_name (str, optional): The split of the testing dataset to use. Defaults to "test".
         """
+        # Configuring the TextGenerator (model + tokenizer)
         if model_name:
             self.text_gen = TextGenerator(model_name)
+            
         elif text_gen:
             if not isinstance(text_gen, TextGenerator):
-                raise ValueError("text_gen must be an instance of TextGenerator")
+                err_msg = "text_gen must be an instance of TextGenerator"
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
             self.text_gen = text_gen
+            
         else:
-            raise ValueError("Either model_name or text_gen must be provided")
+            err_msg = "Either model_name or text_gen must be provided"
+            logger.exception(err_msg)
+            raise ValueError(err_msg)
         
+        # Configuring the Training Dataset
         if train_dataset_name:
             try:
-                self.train_dataset = DataSet(train_dataset_name, train_dataset_split_name)
+                _dataset = DataSet(train_dataset_name, train_dataset_split_name)
+                self.train_dataset = _dataset.load()
             except Exception:
-                raise ValueError(f"Please provide a valid dataset split.")
+                err_msg = "Please provide a valid training dataset split."
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
+        
         elif train_dataset:
             if isinstance(train_dataset, DataSet):
-                self.train_dataset = train_dataset
+                try:
+                    self.train_dataset = train_dataset.load()
+                except Exception:
+                    err_msg = "Please provide a valid training dataset split."
+                    logger.exception(err_msg)
+                    raise ValueError(err_msg)
             elif isinstance(train_dataset, HFDataset):
-                self.train_dataset = load_dataset(train_dataset, split=train_dataset_split_name)
-        else:
-            raise ValueError("Either dataset_name or dataset must be provided")
+                self.train_dataset = train_dataset # assuming it's good to go :3
         
+        else:
+            err_msg = "Either train_dataset_name or train_dataset must be provided"
+            logger.exception(err_msg)
+            raise ValueError(err_msg)
+        
+        # Configuring the Test Dataset
         if test_dataset_name:
             try:
-                self.test_dataset = DataSet(test_dataset_name, test_dataset_split_name)
+                _dataset = DataSet(test_dataset_name, test_dataset_split_name)
+                self.test_dataset = _dataset.load()
             except Exception:
-                raise ValueError(f"Please provide a valid dataset split.")
+                err_msg = "Please provide a valid test dataset split."
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
+        
         elif test_dataset:
             if isinstance(test_dataset, DataSet):
-                self.test_dataset = test_dataset
+                try:
+                    self.test_dataset = test_dataset.load()
+                except Exception:
+                    err_msg = "Please provide a valid test dataset split."
+                    logger.exception(err_msg)
+                    raise ValueError(err_msg)
             elif isinstance(test_dataset, HFDataset):
-                self.test_dataset = load_dataset(test_dataset, split=test_dataset_split_name)
+                self.test_dataset = test_dataset # assuming it's good to go :3
+        
         else:
-            raise ValueError("Either dataset_name or dataset must be provided")
+            err_msg = "Either test_dataset_name or test_dataset must be provided"
+            logger.exception(err_msg)
+            raise ValueError(err_msg)
 
 
-    def fine_tune(self, save_to_disk: bool = False):
+    def fine_tune(self, save_to_disk: bool = False, limit: int = None):
         """
         Fine-tunes the model using the provided dataset. (Supervised Fine-Tuning **SFT** approach)
         #### Note:
         This method will change the model's parameters **inplace**.
         Args:
             save_to_disk (bool): Whether to save checkpoints and logs to disk during training. Defaults to False.
+            limit (int, optional): Limit the number of training samples. Defaults to None.
         """
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
-        _train_dataset = self.train_dataset.load()
-        _test_dataset = self.test_dataset.load()
+        
+        if limit:
+            if limit <= 0 or limit > len(self.train_dataset) or limit > len(self.test_dataset):
+                err_msg = f"Limit must be a positive integer less than or equal to the size of the datasets. Current sizes: train={len(self.train_dataset)}, test={len(self.test_dataset)}"
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
+            logger.info(f"Limiting training dataset to {limit} samples.")
+            self.train_dataset = self.train_dataset.select(range(limit))
+            logger.info(f"Limiting test dataset to {limit} samples.")
+            self.test_dataset = self.test_dataset.select(range(limit))
 
-        tokenized_train = _train_dataset.map(
-            self.preprocessor, remove_columns=_train_dataset.column_names
+        tokenized_train = self.train_dataset.map(
+            self.preprocessor, remove_columns=self.train_dataset.column_names
         )
-        tokenized_test = _test_dataset.map(
-            self.preprocessor, remove_columns=_test_dataset.column_names
+        logger.info(f"Tokenized training dataset.")
+        
+        tokenized_test = self.test_dataset.map(
+            self.preprocessor, remove_columns=self.test_dataset.column_names
         )
+        logger.info(f"Tokenized test dataset.")
 
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+        logger.info(f"Data collator created.")
 
         if save_to_disk:
+            _hash = random_hash()
+            output_dir = OUTPUT_DIR + f"/sft/sft_session_{_hash}"
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
             training_args = TrainingArguments(
-                output_dir=OUTPUT_DIR,
+                output_dir=output_dir,
                 per_device_train_batch_size=4,
                 per_device_eval_batch_size=4,
-                eval_strategy="steps",
-                eval_steps=500,
-                logging_steps=100,
+                evaluation_strategy="epoch",
                 save_strategy="epoch",
-                save_total_limit=2,
                 num_train_epochs=3,
                 learning_rate=5e-5,
-                weight_decay=0.01,
                 warmup_steps=100,
+                weight_decay=0.01,
                 fp16=torch.cuda.is_available(),
-                logging_dir=f"{OUTPUT_DIR}/logs",
+                logging_dir=f"{output_dir}/logs",
                 report_to="none",
-                push_to_hub=False
             )
         else:
             # In-memory training without disk I/O
             training_args = TrainingArguments(
-                output_dir="./tmp",  # Required but won't be used
+                output_dir=OUTPUT_DIR,  # Required but won't be used
                 per_device_train_batch_size=4,
                 per_device_eval_batch_size=4,
-                eval_strategy="steps",
-                eval_steps=500,
-                save_strategy="no", 
+                evaluation_strategy="epoch",
+                save_strategy="no",
                 num_train_epochs=3,
                 learning_rate=5e-5,
-                weight_decay=0.01,
                 warmup_steps=100,
+                weight_decay=0.01,
                 fp16=torch.cuda.is_available(),
                 report_to="none",
-                push_to_hub=False,
                 dataloader_pin_memory=False,
                 remove_unused_columns=True,
             )
-
+        logger.info(f"Training arguments set up.")
+        
         trainer = Trainer(
             model=model,
             args=training_args,
             train_dataset=tokenized_train,
             eval_dataset=tokenized_test,
-            data_collator=data_collator
+            data_collator=data_collator,
         )
 
+        logger.info(f"Trainer starting...")
         trainer.train()
+        logger.info(f"Training completed.")
         
 
     def preprocessor(self, example):
@@ -355,6 +404,8 @@ class SFTTrainer:
             output_dir = OUTPUT_DIR + "/final_sft"
         _hash = random_hash()
         output_dir = f"{output_dir}/{_hash}"
+        os.makedirs(output_dir, exist_ok=True)
         
         self.text_gen.model.save_pretrained(output_dir)
         self.text_gen.tokenizer.save_pretrained(output_dir)
+        logger.info(f"Model and tokenizer saved to {output_dir}.")
