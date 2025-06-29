@@ -1,11 +1,25 @@
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
-from helpers.utils import TextGenerator, DataSet
+from helpers.utils import TextGenerator, DataSet, random_hash
 import torch
 from datasets import Dataset as HFDataset, load_dataset
 from typing import Any
+import logging
+import time
+import os
 
 
-OUTPUT_DIR = "./cache/output"
+OUTPUT_DIR = "./.cache/output"
+LOGS_DIR = OUTPUT_DIR + "/logs"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+handler = logging.FileHandler(LOGS_DIR + f"/log_{time.strftime('%Y%m%d_%H%M%S')}.log", mode='w')
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 
 class DAFTTrainer:
@@ -13,6 +27,7 @@ class DAFTTrainer:
     Fine-tunes a given model using the Domain-Adaptive Fine-Tuning (DAFT) approach on a given dataset.
     Outputs a new fine-tuned model that can be saved to a specified output directory.
     """
+
 
     def __init__(
         self,
@@ -32,59 +47,106 @@ class DAFTTrainer:
             dataset_name (str, optional): The name of the dataset to use. Defaults to None.
             dataset_split (str, optional): The split of the dataset to use. Defaults to "train".
         """
+        # Configuring the TextGenerator (model + tokenizer)
         if model_name:
             self.text_gen = TextGenerator(model_name)
+            
         elif text_gen:
             if not isinstance(text_gen, TextGenerator):
-                raise ValueError("text_gen must be an instance of TextGenerator")
+                err_msg = "text_gen must be an instance of TextGenerator"
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
             self.text_gen = text_gen
+            
         else:
-            raise ValueError("Either model_name or text_gen must be provided")
+            err_msg = "Either model_name or text_gen must be provided"
+            logger.exception(err_msg)
+            raise ValueError(err_msg)
         
+        # Configuring the Dataset
         if dataset_name:
             try:
-                self.dataset = DataSet(dataset_name, dataset_split_name)
+                _dataset = DataSet(dataset_name, dataset_split_name)
+                self.dataset = _dataset.load()
             except Exception:
-                raise ValueError(f"Please provide a valid dataset split.")
+                err_msg = "Please provide a valid dataset split."
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
+        
         elif dataset:
             if isinstance(dataset, DataSet):
-                self.dataset = dataset
+                try:
+                    self.dataset = dataset.load()
+                except Exception:
+                    err_msg = "Please provide a valid dataset split."
+                    logger.exception(err_msg)
+                    raise ValueError(err_msg)
             elif isinstance(dataset, HFDataset):
-                self.dataset = load_dataset(dataset, split=dataset_split_name)
+                self.dataset = dataset # assuming it's good to go :3
+        
         else:
-            raise ValueError("Either dataset_name or dataset must be provided")
+            err_msg = "Either dataset_name or dataset must be provided"
+            logger.exception(err_msg)
+            raise ValueError(err_msg)
 
 
-    def fine_tune(self):
+    def fine_tune(self, save_to_disk: bool = False, limit: int = None):
         """
         Fine-tunes the model using the provided dataset. (Domain-Adaptive Fine-Tuning **DAFT** approach)
         #### Note:
         This method will change the model's parameters **inplace**.
+        Args:
+            save_to_disk (bool): Whether to save checkpoints and logs to disk during training. Defaults to False.
         """
-
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
-        _dataset = self.dataset.load()
-
-        tokenized_train = _dataset.map(
-            self.preprocesser, remove_columns=_dataset.column_names
+        if limit:
+            logger.info(f"Limiting dataset to {limit} samples.")
+            self.dataset = self.dataset.select(range(limit))
+        
+        tokenized_train = self.dataset.map(
+            self.preprocessor, remove_columns=self.dataset.column_names
         )
+        logger.info(f"Tokenized dataset.")
 
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-
-        training_args = TrainingArguments(
-            output_dir=OUTPUT_DIR,
-            per_device_train_batch_size=4,
-            save_strategy="epoch",
-            num_train_epochs=3,
-            learning_rate=5e-5,
-            warmup_steps=100,
-            weight_decay=0.01,
-            fp16=torch.cuda.is_available(),
-            logging_dir=f"{OUTPUT_DIR}/logs",
-            report_to="none",
-        )
-
+        logger.info(f"Data collator created.")
+        
+        if save_to_disk:
+            _hash = random_hash()
+            output_dir = OUTPUT_DIR + f"/daft/daft_session_{_hash}"
+            os.makedirs(output_dir, exist_ok=True)
+            logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
+            training_args = TrainingArguments(
+                output_dir=output_dir,
+                per_device_train_batch_size=4,
+                save_strategy="epoch",
+                num_train_epochs=3,
+                learning_rate=5e-5,
+                warmup_steps=100,
+                weight_decay=0.01,
+                fp16=torch.cuda.is_available(),
+                logging_dir=f"{output_dir}/logs",
+                report_to="none",
+            )
+        else:
+            # In-memory training without disk I/O
+            training_args = TrainingArguments(
+                output_dir=OUTPUT_DIR,  # Required but won't be used
+                per_device_train_batch_size=4,
+                save_strategy="no",
+                num_train_epochs=3,
+                learning_rate=5e-5,
+                warmup_steps=100,
+                weight_decay=0.01,
+                fp16=torch.cuda.is_available(),
+                # logging_steps=0,
+                report_to="none",
+                dataloader_pin_memory=False,
+                remove_unused_columns=True,
+            )
+        logger.info(f"Training arguments set up.")
+        
         trainer = Trainer(
             model=model,
             args=training_args,
@@ -92,10 +154,12 @@ class DAFTTrainer:
             data_collator=data_collator,
         )
 
+        logger.info(f"Trainer starting...")
         trainer.train()
+        logger.info(f"Training completed.")
     
 
-    def preprocesser(self, example):
+    def preprocessor(self, example):
         """
         Preprocess function for the dataset.
         """
@@ -111,14 +175,21 @@ class DAFTTrainer:
         return {k: v.squeeze() for k, v in encoded.items()}
     
     
-    def save_model(self, output_dir: str = OUTPUT_DIR):
+    def save_model(self, output_dir: str = None):
         """
         Saves the model and tokenizer to the specified output directory.
         Args:
             output_dir (str): The directory where the model and tokenizer will be saved.
         """
+        if output_dir is None:
+            output_dir = OUTPUT_DIR + "/final_daft"
+        _hash = random_hash()
+        output_dir = f"{output_dir}/{_hash}"
+        os.makedirs(output_dir, exist_ok=True)
+        
         self.text_gen.model.save_pretrained(output_dir)
         self.text_gen.tokenizer.save_pretrained(output_dir)
+        logger.info(f"Model and tokenizer saved to {output_dir}.")
         
 
 class SFTTrainer:
@@ -126,7 +197,6 @@ class SFTTrainer:
     Fine-tunes a given model using the Domain-Adaptive Fine-Tuning (SFT) approach on a given dataset.
     Outputs a new fine-tuned model that can be saved to a specified output directory.
     """
-
     def __init__(
         self,
         text_gen: TextGenerator = None,
@@ -187,11 +257,13 @@ class SFTTrainer:
             raise ValueError("Either dataset_name or dataset must be provided")
 
 
-    def fine_tune(self):
+    def fine_tune(self, save_to_disk: bool = False):
         """
         Fine-tunes the model using the provided dataset. (Supervised Fine-Tuning **SFT** approach)
         #### Note:
         This method will change the model's parameters **inplace**.
+        Args:
+            save_to_disk (bool): Whether to save checkpoints and logs to disk during training. Defaults to False.
         """
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
@@ -199,32 +271,52 @@ class SFTTrainer:
         _test_dataset = self.test_dataset.load()
 
         tokenized_train = _train_dataset.map(
-            self.preprocesser, remove_columns=_train_dataset.column_names
+            self.preprocessor, remove_columns=_train_dataset.column_names
         )
-        tokenized_test = _train_dataset.map(
-            self.preprocesser, remove_columns=_test_dataset.column_names
+        tokenized_test = _test_dataset.map(
+            self.preprocessor, remove_columns=_test_dataset.column_names
         )
 
         data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
 
-        training_args = TrainingArguments(
-            output_dir=OUTPUT_DIR,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
-            eval_strategy="steps",
-            eval_steps=500,
-            logging_steps=100,
-            save_strategy="epoch",
-            save_total_limit=2,
-            num_train_epochs=3,
-            learning_rate=5e-5,
-            weight_decay=0.01,
-            warmup_steps=100,
-            fp16=torch.cuda.is_available(),
-            logging_dir=f"{OUTPUT_DIR}/logs",
-            report_to="none",
-            push_to_hub=False
-        )
+        if save_to_disk:
+            training_args = TrainingArguments(
+                output_dir=OUTPUT_DIR,
+                per_device_train_batch_size=4,
+                per_device_eval_batch_size=4,
+                eval_strategy="steps",
+                eval_steps=500,
+                logging_steps=100,
+                save_strategy="epoch",
+                save_total_limit=2,
+                num_train_epochs=3,
+                learning_rate=5e-5,
+                weight_decay=0.01,
+                warmup_steps=100,
+                fp16=torch.cuda.is_available(),
+                logging_dir=f"{OUTPUT_DIR}/logs",
+                report_to="none",
+                push_to_hub=False
+            )
+        else:
+            # In-memory training without disk I/O
+            training_args = TrainingArguments(
+                output_dir="./tmp",  # Required but won't be used
+                per_device_train_batch_size=4,
+                per_device_eval_batch_size=4,
+                eval_strategy="steps",
+                eval_steps=500,
+                save_strategy="no", 
+                num_train_epochs=3,
+                learning_rate=5e-5,
+                weight_decay=0.01,
+                warmup_steps=100,
+                fp16=torch.cuda.is_available(),
+                report_to="none",
+                push_to_hub=False,
+                dataloader_pin_memory=False,
+                remove_unused_columns=True,
+            )
 
         trainer = Trainer(
             model=model,
@@ -237,7 +329,7 @@ class SFTTrainer:
         trainer.train()
         
 
-    def preprocesser(self, example):
+    def preprocessor(self, example):
         """
         Preprocess function for the dataset.
         """
@@ -253,11 +345,16 @@ class SFTTrainer:
         return {k: v.squeeze() for k, v in encoded.items()}
     
     
-    def save_model(self, output_dir: str = OUTPUT_DIR):
+    def save_model(self, output_dir: str = None):
         """
         Saves the model and tokenizer to the specified output directory.
         Args:
             output_dir (str): The directory where the model and tokenizer will be saved.
         """
+        if output_dir is None:
+            output_dir = OUTPUT_DIR + "/final_sft"
+        _hash = random_hash()
+        output_dir = f"{output_dir}/{_hash}"
+        
         self.text_gen.model.save_pretrained(output_dir)
         self.text_gen.tokenizer.save_pretrained(output_dir)
