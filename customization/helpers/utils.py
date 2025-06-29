@@ -1,6 +1,17 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
+class DataSet:
+    def __init__(self, name, split):
+        self.name = name
+        self.split = split
+
+    def load(self):
+        from datasets import load_dataset
+        dataset = load_dataset(self.name)
+        return dataset[self.split] if self.split in dataset else dataset
+
+
 class TextGenerator:
     def __init__(self, model_name):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
