@@ -26,4 +26,4 @@ class TextGenerator:
     
 
 def random_hash(length=8):
-    return ''.join([chr(randint(65, 90)) if randint(0, 1) else str(randint(0, 9)) for _ in range(length)])
+    return ''.join([chr(randint(97, 122)) if randint(0, 1) else str(randint(0, 9)) for _ in range(length)])

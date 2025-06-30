@@ -1,7 +1,7 @@
 from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
 from helpers.utils import TextGenerator, DataSet, random_hash
 import torch
-from datasets import Dataset as HFDataset, load_dataset
+from datasets import Dataset as HFDataset
 from typing import Any
 import logging
 import time
@@ -10,7 +10,6 @@ import os
 
 OUTPUT_DIR = "./.cache/output"
 LOGS_DIR = OUTPUT_DIR + "/logs"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 logger = logging.getLogger(__name__)
@@ -47,7 +46,12 @@ class DAFTTrainer:
         """
         # Configuring the TextGenerator (model + tokenizer)
         if model_name:
-            self.text_gen = TextGenerator(model_name)
+            try:
+                self.text_gen = TextGenerator(model_name)
+            except Exception as e:
+                err_msg = f"Failed to initialize TextGenerator with model_name '{model_name}': {str(e)}"
+                logger.error(err_msg, exc_info=True)
+                raise ValueError(err_msg)
             
         elif text_gen:
             if not isinstance(text_gen, TextGenerator):
@@ -88,77 +92,107 @@ class DAFTTrainer:
             raise ValueError(err_msg)
 
 
-    def fine_tune(self, save_to_disk: bool = False, limit: int = None):
+    def fine_tune(self, save_to_disk: bool = False, output_dir: str = None, limit: int = None):
         """
         Fine-tunes the model using the provided dataset. (Domain-Adaptive Fine-Tuning **DAFT** approach)
         #### Note:
         This method will change the model's parameters **inplace**.
         Args:
             save_to_disk (bool): Whether to save checkpoints and logs to disk during training. Defaults to False.
+            output_dir (str, optional): The directory where the model and tokenizer will be saved. Defaults to None.
+            limit (int, optional): Limit the number of training samples. Defaults to None.
         """
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
+        _dataset = self.dataset
+        
         if limit:
             if limit <= 0 or limit > len(self.dataset):
                 err_msg = f"Limit must be a positive integer less than or equal to the size of the dataset. Current size: {len(self.dataset)}"
                 logger.exception(err_msg)
                 raise ValueError(err_msg)
             logger.info(f"Limiting dataset to {limit} samples.")
-            self.dataset = self.dataset.select(range(limit))
+            _dataset = self.dataset.select(range(limit))
         
-        tokenized_train = self.dataset.map(
-            self.preprocessor, remove_columns=self.dataset.column_names
-        )
-        logger.info(f"Tokenized dataset.")
-
-        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-        logger.info(f"Data collator created.")
-        
-        if save_to_disk:
-            _hash = random_hash()
-            output_dir = OUTPUT_DIR + f"/daft/daft_session_{_hash}"
-            os.makedirs(output_dir, exist_ok=True)
-            logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                per_device_train_batch_size=4,
-                save_strategy="epoch",
-                num_train_epochs=3,
-                learning_rate=5e-5,
-                warmup_steps=100,
-                weight_decay=0.01,
-                fp16=torch.cuda.is_available(),
-                logging_dir=f"{output_dir}/logs",
-                report_to="none",
+        # Apply the preprocessor to the selected limit of the dataset
+        try:
+            tokenized_train = _dataset.map(
+                self.preprocessor, remove_columns=_dataset.column_names
             )
-        else:
-            # In-memory training without disk I/O
-            training_args = TrainingArguments(
-                output_dir=OUTPUT_DIR,  # Required but won't be used
-                per_device_train_batch_size=4,
-                save_strategy="no",
-                num_train_epochs=3,
-                learning_rate=5e-5,
-                warmup_steps=100,
-                weight_decay=0.01,
-                fp16=torch.cuda.is_available(),
-                # logging_steps=0,
-                report_to="none",
-                dataloader_pin_memory=False,
-                remove_unused_columns=True,
-            )
-        logger.info(f"Training arguments set up.")
-        
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_train,
-            data_collator=data_collator,
-        )
+            logger.info(f"Tokenized dataset.")
+        except Exception as e:
+            err_msg = f"Failed to tokenize dataset: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
 
-        logger.info(f"Trainer starting...")
-        trainer.train()
-        logger.info(f"Training completed.")
+        try:
+            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+            logger.info(f"Data collator created.")
+        except Exception as e:
+            err_msg = f"Failed to create data collator: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+        
+        try:
+            if save_to_disk:
+                if output_dir is None:
+                    _hash = random_hash()
+                    output_dir = OUTPUT_DIR + f"/daft/daft_session_{_hash}"
+                    os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
+                training_args = TrainingArguments(
+                    output_dir=output_dir,
+                    per_device_train_batch_size=4,
+                    save_strategy="epoch",
+                    num_train_epochs=3,
+                    learning_rate=5e-5,
+                    warmup_steps=100,
+                    weight_decay=0.01,
+                    fp16=torch.cuda.is_available(),
+                    logging_dir=f"{output_dir}/logs",
+                    report_to="none",
+                )
+            else:
+                # in-memory training without disk I/O
+                training_args = TrainingArguments(
+                    output_dir=OUTPUT_DIR,  # required but won't be used
+                    per_device_train_batch_size=4,
+                    save_strategy="no",
+                    num_train_epochs=3,
+                    learning_rate=5e-5,
+                    warmup_steps=100,
+                    weight_decay=0.01,
+                    fp16=torch.cuda.is_available(),
+                    report_to="none",
+                    dataloader_pin_memory=False,
+                    remove_unused_columns=True,
+                )
+            logger.info(f"Training arguments set up.")
+        except Exception as e:
+            err_msg = f"Failed to set up training arguments: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+        
+        try:
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                data_collator=data_collator,
+            )
+        except Exception as e:
+            err_msg = f"Failed to initialize Trainer: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+
+        try:
+            logger.info(f"Trainer starting...")
+            trainer.train()
+            logger.info(f"Training completed.")
+        except Exception as e:
+            err_msg = f"Training failed: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
     
 
     def preprocessor(self, example):
@@ -192,7 +226,7 @@ class DAFTTrainer:
         self.text_gen.model.save_pretrained(output_dir)
         self.text_gen.tokenizer.save_pretrained(output_dir)
         logger.info(f"Model and tokenizer saved to {output_dir}.")
-        
+
 
 class SFTTrainer:
     """
@@ -225,7 +259,12 @@ class SFTTrainer:
         """
         # Configuring the TextGenerator (model + tokenizer)
         if model_name:
-            self.text_gen = TextGenerator(model_name)
+            try:
+                self.text_gen = TextGenerator(model_name)
+            except Exception as e:
+                err_msg = f"Failed to initialize TextGenerator with model_name '{model_name}': {str(e)}"
+                logger.error(err_msg, exc_info=True)
+                raise ValueError(err_msg)
             
         elif text_gen:
             if not isinstance(text_gen, TextGenerator):
@@ -292,90 +331,132 @@ class SFTTrainer:
             raise ValueError(err_msg)
 
 
-    def fine_tune(self, save_to_disk: bool = False, limit: int = None):
+    def fine_tune(self, save_to_disk: bool = False, output_dir: str = None, train_limit: int = None, test_limit: int = None):
         """
         Fine-tunes the model using the provided dataset. (Supervised Fine-Tuning **SFT** approach)
         #### Note:
         This method will change the model's parameters **inplace**.
         Args:
             save_to_disk (bool): Whether to save checkpoints and logs to disk during training. Defaults to False.
-            limit (int, optional): Limit the number of training samples. Defaults to None.
+            output_dir (str, optional): The directory where the model and tokenizer will be saved. Defaults to None.
+            train_limit (int, optional): Limit the number of training samples. Defaults to None.
+            test_limit (int, optional): Limit the number of test samples. Defaults to None.
         """
         model = self.text_gen.model
         tokenizer = self.text_gen.tokenizer
+        _train_dataset = self.train_dataset
+        _test_dataset = self.test_dataset
         
-        if limit:
-            if limit <= 0 or limit > len(self.train_dataset) or limit > len(self.test_dataset):
+        if train_limit:
+            if train_limit <= 0 or train_limit > len(self.train_dataset):
                 err_msg = f"Limit must be a positive integer less than or equal to the size of the datasets. Current sizes: train={len(self.train_dataset)}, test={len(self.test_dataset)}"
                 logger.exception(err_msg)
                 raise ValueError(err_msg)
-            logger.info(f"Limiting training dataset to {limit} samples.")
-            self.train_dataset = self.train_dataset.select(range(limit))
-            logger.info(f"Limiting test dataset to {limit} samples.")
-            self.test_dataset = self.test_dataset.select(range(limit))
-
-        tokenized_train = self.train_dataset.map(
-            self.preprocessor, remove_columns=self.train_dataset.column_names
-        )
-        logger.info(f"Tokenized training dataset.")
+            logger.info(f"Limiting training dataset to {train_limit} samples.")
+            _train_dataset = self.train_dataset.select(range(train_limit))
         
-        tokenized_test = self.test_dataset.map(
-            self.preprocessor, remove_columns=self.test_dataset.column_names
-        )
-        logger.info(f"Tokenized test dataset.")
+        if test_limit:
+            if test_limit <= 0 or test_limit > len(self.test_dataset):
+                err_msg = f"Limit must be a positive integer less than or equal to the size of the datasets. Current sizes: train={len(self.train_dataset)}, test={len(self.test_dataset)}"
+                logger.exception(err_msg)
+                raise ValueError(err_msg)
+            logger.info(f"Limiting test dataset to {test_limit} samples.")
+            _test_dataset = self.test_dataset.select(range(test_limit))
 
-        data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
-        logger.info(f"Data collator created.")
-
-        if save_to_disk:
-            _hash = random_hash()
-            output_dir = OUTPUT_DIR + f"/sft/sft_session_{_hash}"
-            os.makedirs(output_dir, exist_ok=True)
-            logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
-            training_args = TrainingArguments(
-                output_dir=output_dir,
-                per_device_train_batch_size=4,
-                per_device_eval_batch_size=4,
-                evaluation_strategy="epoch",
-                save_strategy="epoch",
-                num_train_epochs=3,
-                learning_rate=5e-5,
-                warmup_steps=100,
-                weight_decay=0.01,
-                fp16=torch.cuda.is_available(),
-                logging_dir=f"{output_dir}/logs",
-                report_to="none",
+        # Apply the preprocessor to the datasets
+        try:
+            tokenized_train = _train_dataset.map(
+                self.preprocessor, remove_columns=_train_dataset.column_names
             )
-        else:
-            # In-memory training without disk I/O
-            training_args = TrainingArguments(
-                output_dir=OUTPUT_DIR,  # Required but won't be used
-                per_device_train_batch_size=4,
-                per_device_eval_batch_size=4,
-                evaluation_strategy="epoch",
-                save_strategy="no",
-                num_train_epochs=3,
-                learning_rate=5e-5,
-                warmup_steps=100,
-                weight_decay=0.01,
-                fp16=torch.cuda.is_available(),
-                report_to="none",
-                dataloader_pin_memory=False,
-                remove_unused_columns=True,
-            )
-        logger.info(f"Training arguments set up.")
+            logger.info(f"Tokenized training dataset.")
+        except Exception as e:
+            err_msg = f"Failed to tokenize training dataset: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
         
-        trainer = Trainer(
-            model=model,
-            args=training_args,
-            train_dataset=tokenized_train,
-            eval_dataset=tokenized_test,
-            data_collator=data_collator,
-        )
+        try:
+            tokenized_test = _test_dataset.map(
+                self.preprocessor, remove_columns=_test_dataset.column_names
+            )
+            logger.info(f"Tokenized test dataset.")
+        except Exception as e:
+            err_msg = f"Failed to tokenize test dataset: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
 
-        logger.info(f"Trainer starting...")
-        trainer.train()
-        logger.info(f"Training completed.")
+        try:
+            data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+            logger.info(f"Data collator created.")
+        except Exception as e:
+            err_msg = f"Failed to create data collator: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+
+        try:
+            if save_to_disk:
+                if output_dir is None:
+                    _hash = random_hash()
+                    output_dir = OUTPUT_DIR + f"/sft/sft_session_{_hash}"
+                    os.makedirs(output_dir, exist_ok=True)
+                logger.info(f"save_to_disk was set to 'True'. Output directory set to {output_dir}.")
+                training_args = TrainingArguments(
+                    output_dir=output_dir,
+                    per_device_train_batch_size=4,
+                    per_device_eval_batch_size=4,
+                    eval_strategy="epoch",
+                    save_strategy="epoch",
+                    num_train_epochs=3,
+                    learning_rate=5e-5,
+                    warmup_steps=100,
+                    weight_decay=0.01,
+                    fp16=torch.cuda.is_available(),
+                    logging_dir=f"{output_dir}/logs",
+                    report_to="none",
+                )
+            else:
+                # in-memory training without disk I/O
+                training_args = TrainingArguments(
+                    output_dir=OUTPUT_DIR,  # required but won't be used
+                    per_device_train_batch_size=4,
+                    per_device_eval_batch_size=4,
+                    eval_strategy="epoch",
+                    save_strategy="no",
+                    num_train_epochs=3,
+                    learning_rate=5e-5,
+                    warmup_steps=100,
+                    weight_decay=0.01,
+                    fp16=torch.cuda.is_available(),
+                    report_to="none",
+                    dataloader_pin_memory=False,
+                    remove_unused_columns=True,
+                )
+            logger.info(f"Training arguments set up.")
+        except Exception as e:
+            err_msg = f"Failed to set up training arguments: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+        
+        try:
+            trainer = Trainer(
+                model=model,
+                args=training_args,
+                train_dataset=tokenized_train,
+                eval_dataset=tokenized_test,
+                data_collator=data_collator,
+            )
+        except Exception as e:
+            err_msg = f"Failed to initialize Trainer: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
+
+        try:
+            logger.info(f"Trainer starting...")
+            trainer.train()
+            logger.info(f"Training completed.")
+        except Exception as e:
+            err_msg = f"Training failed: {str(e)}"
+            logger.error(err_msg, exc_info=True)
+            raise ValueError(err_msg)
         
 
     def preprocessor(self, example):
